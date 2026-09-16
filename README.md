@@ -211,14 +211,21 @@ curl http://localhost:8080/appointments/5
 
 `200 OK` with the same body shape as above, or `404 APPOINTMENT_NOT_FOUND`.
 
-### Delivery idempotency limitation
+### Delivery idempotency
 
-The logging sender has no external provider: it inserts the notification key into
-`notification_deliveries` with a database unique constraint before logging. This makes the stub's
-deduplication durable across retries, process restarts, and multiple instances. A crash after that
-insert but before the log means the stub will suppress the later attempt; a real provider must
-implement the same key atomically at its delivery boundary to provide the corresponding customer
-guarantee. The reminder lifecycle remains `PENDING -> PROCESSING -> SENT` with timeout recovery.
+Before logging, `LoggingNotificationSender` inserts the reminder's idempotency key into the
+`notification_deliveries` table:
+
+```sql
+INSERT INTO notification_deliveries (idempotency_key, recorded_at)
+VALUES (?, CURRENT_TIMESTAMP)
+ON CONFLICT (idempotency_key) DO NOTHING
+```
+
+If the row already exists the insert is a no-op and the notification is logged as
+`NOTIFICATION DUPLICATE SUPPRESSED`. This makes the stub's deduplication durable across retries,
+process restarts, and multiple instances. A real provider must enforce the same idempotency key at
+its own delivery boundary to provide the equivalent customer guarantee.
 
 ### `POST /appointments/{id}/cancel`
 
@@ -572,12 +579,12 @@ Skipped:     0
 |---|---|---|
 | `AppointmentApiIntegrationTest` | 32 | The full HTTP contract via MockMvc: creation and persistence, every validation rule, cancellation, rescheduling, and the `400`/`404`/`405`/`409`/`415` status matrix. |
 | `ReminderClaimConcurrencyIntegrationTest` | 11 | Real threads against real PostgreSQL: `SKIP LOCKED` disjoint and non-blocking claiming, what must never be claimed (not-yet-due, terminal, in-flight, inside the retry delay), batch-size bound, and stale-claim recovery. |
-| `ReminderWorkerTest` | 14 | Claiming, atomic processing, send success, retries, cancellation checks, and failure handling. |
+| `ReminderWorkerIntegrationTest` | 14 | Claiming, atomic processing, send success, retries, cancellation checks, and failure handling. |
 | `DatabaseIntegrityIntegrationTest` | 13 | Unique constraint, foreign key, cascade delete, timestamp fidelity, the `SENT`/`sent_at` invariant, guarded outcome writes, index existence, and a volume sanity check. |
 | `NoDuplicateReminderGuaranteeTest` | 7 | The assignment requirement at all three layers, including eight concurrent workers delivering a single reminder exactly once, and a stable idempotency key across retries. |
 | `EndToEndReminderFlowIntegrationTest` | 7 | Book over HTTP → persisted → claimed → sent, through the real `LoggingNotificationSender`. Restart simulation, stale-claim recovery, and partial batch failure. |
 | `ReminderWorkerTest` | 5 | Orchestration order and error containment, with Mockito. |
-| `LoggingNotificationSenderTest` | 5 | Payload logged, contact masked, nothing sent externally. |
+| `LoggingNotificationSenderTest` | 6 | Payload logged, contact masked, duplicate suppression via idempotency key, nothing sent externally. |
 
 **Concurrency tests use real PostgreSQL, not H2.** H2 does not implement `FOR UPDATE SKIP LOCKED`, so
 testing the claim query against an in-memory database would be testing behaviour that does not exist in
@@ -765,9 +772,9 @@ Two settings, and one line of code, make time handling unambiguous:
 ```
 
 Bookings and reminders cluster in business hours, so assume a 20× peak — roughly **25 reminders/second**.
-With a 10-second cron schedule and a batch size of 100, one instance can move 100 reminders per cycle,
-about **10/second sustained from a single-threaded loop**. The average load runs comfortably on one
-instance; the peak is covered by a second instance.
+With a 1-minute cron schedule (`0 * * * * *`) and a batch size of 100, one instance can move 100 reminders
+per cycle, about **1.7/second sustained from a single-threaded loop**. The average load runs comfortably on
+one instance; the peak is covered by a second instance.
 
 Stating the number matters: **this workload is small.** The engineering difficulty here is correctness
 under concurrent workers and crashes, not throughput. Introducing a message broker to move 25 messages per
@@ -803,32 +810,6 @@ testing against production-like infrastructure would be required to make any cap
 Due reminders are processed in global `scheduled_at` order, so one dealership bulk-loading tens of
 thousands of appointments delays other dealerships by that burst's drain time — minutes at this volume.
 Per-dealership fair scheduling is not implemented.
-
-### What I Would Improve With Another Week
-
-None of these are implemented; they are the next things I would build.
-
-1. **Provider-side idempotency.** Pass the reminder id to a real provider as its idempotency key, which
-   would upgrade delivery from at-least-once to effectively-once.
-2. **Metrics and observability.** Micrometer counters and a histogram for dispatch lateness, plus an alert
-   on the age of the oldest overdue `PENDING` reminder — the single most useful health signal for this
-   system. Today the answer comes from a SQL query and structured logs.
-3. **An operational endpoint for `FAILED` reminders.** Listing and retrying them currently requires
-   database access.
-4. **Smarter retry and backoff.** The retry delay is a fixed interval; exponential backoff with jitter, and
-   distinguishing permanent failures (invalid address) from transient ones (provider timeout), would avoid
-   wasting five attempts on an address that will never work.
-5. **Load testing.** Against production-like infrastructure, to replace the design argument in this section
-   with measurements.
-6. **Production deployment configuration.** Externalised secrets management, connection-pool tuning for
-   the real instance count, and a least-privilege database user.
-7. **Multi-channel delivery.** Adding a `channel` column and widening the unique constraint to
-   `(appointment_id, reminder_type, channel)`, with a small sender registry to route between
-   implementations.
-8. **Fencing on the claim.** Including the claimed `processing_until` in the outcome `UPDATE` would close
-   the slow-worker race described below, at the cost of one extra predicate.
-9. **Per-dealership fair scheduling**, so one bulk import cannot delay other tenants.
-10. **Archival** of terminal reminders older than a retention window.
 
 ---
 
