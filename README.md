@@ -262,12 +262,7 @@ curl http://localhost:8080/actuator/health
 
 Health is the **only** Actuator endpoint exposed.
 
-### Endpoints that do **not** exist
 
-- **`DELETE /appointments/{id}` is not implemented.** Cancellation is a state transition, not a deletion —
-  the appointment and its reminder history are kept for auditability. This path returns
-  `405 METHOD_NOT_ALLOWED`.
-- **`GET /appointments` (list) is not implemented.** It returns `405 METHOD_NOT_ALLOWED`.
 
 ### Error body
 
@@ -325,13 +320,8 @@ error**: the appointment is created successfully and the response shows exactly 
 | Booked | Appointment at | 24-hour reminder | 2-hour reminder |
 |---|---|---|---|
 | T − 30 days | T | created | created |
-| T − 25 hours | T | created, due in ~1 hour | created |
 | T − 23h 45m | T | **not created** | created |
-| T − 23h 44m | T | **not created** | created |
-| T − 12 hours | T | **not created** | created |
 | T − 1h 50m | T | **not created** | **not created** |
-| T − 1h 44m | T | **not created** | **not created** |
-| T − 30 minutes | T | **not created** | **not created** |
 
 ### A note on message content
 
@@ -679,44 +669,21 @@ Both instances run the identical worker. No configuration differs between them.
 ## Example API Usage
 
 ```bash
-# 1. Create an appointment 30 days out — both reminders are created
+# Create an appointment 30 days out — both reminders are created
 curl -X POST http://localhost:8080/appointments \
   -H 'Content-Type: application/json' \
-  -d '{
-        "dealershipId": 42,
-        "customerName": "Ada Lovelace",
-        "customerContact": "ada@example.com",
-        "scheduledAt": "2026-10-20T14:30:00-04:00"
-      }'
+  -d '{"dealershipId":42,"customerName":"Ada Lovelace","customerContact":"ada@example.com","scheduledAt":"2026-10-20T14:30:00-04:00"}'
 
-# 2. Read it back with the full state of its reminders
+# Read it back — shows reminder status, attempt count, sentAt
 curl http://localhost:8080/appointments/5
 
-# 3. Reschedule it — unsent reminders move; reminders already sent are untouched
+# Reschedule — unsent reminders move; reminders already sent are left alone
 curl -X PATCH http://localhost:8080/appointments/5 \
   -H 'Content-Type: application/json' \
-  -d '{"scheduledAt": "2026-10-25T09:00:00-04:00"}'
+  -d '{"scheduledAt":"2026-10-25T09:00:00-04:00"}'
 
-# 4. Cancel it — pending reminders become CANCELLED and never fire
+# Cancel — pending reminders become CANCELLED and never fire
 curl -X POST http://localhost:8080/appointments/5/cancel
-```
-
-Two more worth trying, because they show the scheduling rules directly:
-
-```bash
-# Booked 3 hours ahead -> only the 2-hour reminder is created, because the
-# 24-hour reminder's due time is already well in the past
-AT=$(python3 -c "import datetime; print((datetime.datetime.now(datetime.timezone.utc) \
-     + datetime.timedelta(hours=3)).replace(microsecond=0).isoformat())")
-curl -X POST http://localhost:8080/appointments \
-  -H 'Content-Type: application/json' \
-  -d "{\"dealershipId\":1,\"customerName\":\"Alan Turing\",
-       \"customerContact\":\"+15551234567\",\"scheduledAt\":\"$AT\"}"
-
-# Verify the no-duplicate invariant directly in the database (must return no rows)
-psql -d appointment_reminder -c \
-  "SELECT appointment_id, reminder_type, count(*) FROM reminders
-    GROUP BY appointment_id, reminder_type HAVING count(*) > 1;"
 ```
 
 ---
@@ -797,14 +764,6 @@ served by `idx_reminders_status_scheduled`.
 Adding instances requires no configuration change: every instance runs the same worker, and `SKIP LOCKED`
 keeps their claims disjoint. Losing an instance costs at most one processing timeout of progress.
 
-### What the tests do and do not show
-
-`shouldClaimABoundedBatchPromptlyFromALargeBacklog` inserts several thousand pending reminders (2,000
-appointments with two reminders each) and confirms a bounded batch is still claimed promptly. **This is a sanity check, not a capacity benchmark.**
-No unit or integration test on a developer machine proves production capacity, which depends on hardware,
-connection pool sizing, network latency and the real notification provider's throughput. Proper load
-testing against production-like infrastructure would be required to make any capacity claim.
-
 ### Known limitation
 
 Due reminders are processed in global `scheduled_at` order, so one dealership bulk-loading tens of
@@ -833,7 +792,7 @@ no leader election.
 
 The work is time-based, and a table of future work polled by due time is a natural durable timer. Nothing
 is held in memory, so a restart loses nothing, and a per-row `last_attempt_at` gives free per-item retry
-scheduling. At roughly 1.2 reminders per second, one indexed query every 10 seconds per instance is a
+scheduling. At roughly 1.2 reminders per second, one indexed query every minute per instance is a
 negligible cost.
 
 ### Why not Kafka, RabbitMQ, or Redis?
@@ -868,8 +827,7 @@ Responsibilities are split so that each class has one reason to change:
 
 - `AppointmentController` — HTTP only: binding, validation triggering, status mapping. No business rules.
 - `AppointmentService` — business logic and the transaction boundary. No HTTP, no SQL.
-- `ReminderWorker` — decides *when* work happens; holds no business logic.
-- `ReminderWorker` — claims, sends, and records each reminder outcome.
+- `ReminderWorker` — scheduled trigger, claiming, sending, retrying, and recording each reminder outcome.
 - `ReminderRepository` / `AppointmentRepository` — database access.
 
 
