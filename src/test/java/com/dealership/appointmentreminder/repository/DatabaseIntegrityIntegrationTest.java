@@ -47,7 +47,7 @@ class DatabaseIntegrityIntegrationTest extends AbstractIntegrationTest {
         // merely application discipline.
         assertThatThrownBy(() -> jdbcTemplate.update(
                 "INSERT INTO reminders (appointment_id, idempotency_key, reminder_type, scheduled_at, status, "
-                        + "attempt_count, created_at, updated_at) VALUES (?, ?, ?, 'PENDING', 0, ?, ?)",
+                        + "attempt_count, created_at, updated_at) VALUES (?, ?, ?, ?, 'PENDING', 0, ?, ?)",
                 appointment.getId(), appointment.getId() + "-" + ReminderType.TWENTY_FOUR_HOURS.name(),
                 ReminderType.TWENTY_FOUR_HOURS.name(),
                 ts(now()), ts(now()), ts(now())))
@@ -85,7 +85,7 @@ class DatabaseIntegrityIntegrationTest extends AbstractIntegrationTest {
     void shouldRejectReminderReferencingNonExistentAppointment() {
         assertThatThrownBy(() -> jdbcTemplate.update(
                 "INSERT INTO reminders (appointment_id, idempotency_key, reminder_type, scheduled_at, status, "
-                        + "attempt_count, created_at, updated_at) VALUES (?, ?, ?, 'PENDING', 0, ?, ?)",
+                        + "attempt_count, created_at, updated_at) VALUES (?, ?, ?, ?, 'PENDING', 0, ?, ?)",
                 999999L, "999999-" + ReminderType.TWO_HOURS.name(), ReminderType.TWO_HOURS.name(),
                 ts(now()), ts(now()), ts(now())))
                 .isInstanceOf(DataIntegrityViolationException.class)
@@ -258,9 +258,9 @@ class DatabaseIntegrityIntegrationTest extends AbstractIntegrationTest {
                 ts(appointmentTime), ts(now()), ts(now()), appointmentCount);
 
         jdbcTemplate.update(
-                "INSERT INTO reminders (appointment_id, reminder_type, scheduled_at, status, "
+                "INSERT INTO reminders (appointment_id, idempotency_key, reminder_type, scheduled_at, status, "
                         + "attempt_count, created_at, updated_at) "
-                        + "SELECT a.id, t.type, ?, 'PENDING', 0, ?, ? FROM appointments a "
+                        + "SELECT a.id, a.id || '-' || t.type, t.type, ?, 'PENDING', 0, ?, ? FROM appointments a "
                         + "CROSS JOIN (VALUES ('TWENTY_FOUR_HOURS'), ('TWO_HOURS')) AS t(type)",
                 ts(dueAt), ts(now()), ts(now()));
 

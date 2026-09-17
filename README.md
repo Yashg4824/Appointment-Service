@@ -27,7 +27,7 @@ All of the following are implemented and covered by automated tests.
 | **Appointment rescheduling** | `PATCH /appointments/{id}` — moves unsent reminders; reminders already sent are never re-sent. |
 | **Notification sender stub** | `LoggingNotificationSender` logs the payload with the customer's contact masked and suppresses repeated keys using PostgreSQL. No external call is made. |
 | **REST API** | Four appointment endpoints plus an Actuator health endpoint, with a consistent JSON error body. |
-| **Automated tests** | 102 tests, including real-PostgreSQL concurrency tests. |
+| **Automated tests** | 88 tests, including real-PostgreSQL concurrency tests. |
 
 ---
 
@@ -128,7 +128,7 @@ src/
 │       ├── application.yml
 │       └── db/migration/           V1..V3 (schema and durable send idempotency)
 └── test/
-    ├── java/                       9 test classes + shared test support
+    ├── java/                       8 test classes + shared test support
     └── resources/
         └── application-test.yml
 ```
@@ -464,7 +464,7 @@ Two properties matter here, and only `SKIP LOCKED` gives both: workers get **dis
 
 ### What the tests verify
 
-`ReminderClaimConcurrencyIntegrationTest` runs against real PostgreSQL with real threads:
+`ReminderWorkerConcurrencyIntegrationTest` runs against real PostgreSQL with real threads:
 
 - `shouldSkipRowLockedByAnotherWorkerInsteadOfBlocking` — worker A holds a genuine row lock inside an open
   transaction while worker B runs the identical query. The test asserts both that B receives a *different*
@@ -559,8 +559,8 @@ received exactly one message".** The code, the tests and this document all use t
 ## Testing
 
 ```text
-Total tests: 102
-Passed:      102
+Total tests: 88
+Passed:      88
 Failed:      0
 Skipped:     0
 ```
@@ -568,12 +568,12 @@ Skipped:     0
 | Test class | Tests | Covers |
 |---|---|---|
 | `AppointmentApiIntegrationTest` | 32 | The full HTTP contract via MockMvc: creation and persistence, every validation rule, cancellation, rescheduling, and the `400`/`404`/`405`/`409`/`415` status matrix. |
-| `ReminderClaimConcurrencyIntegrationTest` | 11 | Real threads against real PostgreSQL: `SKIP LOCKED` disjoint and non-blocking claiming, what must never be claimed (not-yet-due, terminal, in-flight, inside the retry delay), batch-size bound, and stale-claim recovery. |
-| `ReminderWorkerIntegrationTest` | 14 | Claiming, atomic processing, send success, retries, cancellation checks, and failure handling. |
+| `ReminderWorkerConcurrencyIntegrationTest` | 11 | Real threads against real PostgreSQL: `SKIP LOCKED` disjoint and non-blocking claiming, what must never be claimed (not-yet-due, terminal, in-flight, inside the retry delay), batch-size bound, and stale-claim recovery. |
+| `ReminderWorkerIntegrationTest` | 9 | Claiming, atomic processing, send success, retries, cancellation checks, and failure handling. |
 | `DatabaseIntegrityIntegrationTest` | 13 | Unique constraint, foreign key, cascade delete, timestamp fidelity, the `SENT`/`sent_at` invariant, guarded outcome writes, index existence, and a volume sanity check. |
 | `NoDuplicateReminderGuaranteeTest` | 7 | The assignment requirement at all three layers, including eight concurrent workers delivering a single reminder exactly once, and a stable idempotency key across retries. |
 | `EndToEndReminderFlowIntegrationTest` | 7 | Book over HTTP → persisted → claimed → sent, through the real `LoggingNotificationSender`. Restart simulation, stale-claim recovery, and partial batch failure. |
-| `ReminderWorkerTest` | 5 | Orchestration order and error containment, with Mockito. |
+| `ReminderWorkerTest` | 3 | Orchestration order and error containment, with Mockito. |
 | `LoggingNotificationSenderTest` | 6 | Payload logged, contact masked, duplicate suppression via idempotency key, nothing sent externally. |
 
 **Concurrency tests use real PostgreSQL, not H2.** H2 does not implement `FOR UPDATE SKIP LOCKED`, so
@@ -643,7 +643,7 @@ export JAVA_HOME=/path/to/your/java-11-jdk
 export DB_USERNAME=YOUR_DB_USERNAME
 export DB_PASSWORD=YOUR_DB_PASSWORD   # may be empty locally
 
-./mvnw clean test          # build and run all 102 tests
+./mvnw clean test          # build and run all 88 tests
 ./mvnw spring-boot:run     # start the service on http://localhost:8080
 ```
 
